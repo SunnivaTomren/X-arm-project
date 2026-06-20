@@ -340,16 +340,26 @@ def train(excel_paths, model_out):
 # 5. REAL-TIME INFERENCE  +  xARM CONTROL
 # ------------------------------------------------------------------
 # Map each predicted gesture to an xArm action. Edit freely.
-# 'gripper' positions for the UFACTORY gripper: 0 = closed, 850 = open.
+#
+# Two action types are supported per gesture:
+#   "gripper": <0-850>            -> open/close the gripper (0=closed, 850=open)
+#   "joint":   {"id": N, "angle": deg}  -> move ONE joint to an absolute angle (degrees)
+#
+# Joint numbering on a 6-axis xArm (servo_id 1-6), counting from the base:
+#   1 = base rotation     2 = shoulder       3 = elbow
+#   4 = wrist rotation 1  5 = wrist bend     6 = wrist rotation 2
+# (xArm7 has an extra joint inserted; check your model's manual/diagram if unsure.)
 GESTURE_TO_ACTION = {
-    "closing_fist":  {"gripper": 0},      # close gripper
-    "opening_hand":  {"gripper": 850},    # open gripper
-    "rest":          None,                 # do nothing
+    "closing_fist":  {"gripper": 0},                  # close gripper
+    "opening_hand":  {"gripper": 850},                # open gripper
+    "rest":          None,                             # do nothing
 }
 
 
 class XArmController:
     """Thin, SAFETY-gated wrapper around the official xArm-Python-SDK."""
+
+    JOINT_SPEED_DEG_S = 50   # how fast joint moves run; tune to taste
 
     def __init__(self, ip, enable_motion=False):
         self.enable_motion = enable_motion          # must be True to actually move
@@ -375,11 +385,21 @@ class XArmController:
         action = GESTURE_TO_ACTION.get(gesture)
         if action is None:
             return
+
         if "gripper" in action:
             pos = action["gripper"]
             print(f"  -> gesture '{gesture}': set gripper to {pos}")
             if self.enable_motion and self.arm is not None:
                 self.arm.set_gripper_position(pos, wait=False)
+
+        if "joint" in action:
+            servo_id = action["joint"]["id"]
+            angle    = action["joint"]["angle"]
+            print(f"  -> gesture '{gesture}': move joint {servo_id} to {angle} deg")
+            if self.enable_motion and self.arm is not None:
+                # servo_id moves ONE joint, leaving the others where they are
+                self.arm.set_servo_angle(servo_id=servo_id, angle=angle,
+                                          speed=self.JOINT_SPEED_DEG_S, wait=False)
 
     def close(self):
         if self.enable_motion and self.arm is not None:
@@ -452,7 +472,7 @@ def main():
     sub = p.add_subparsers(dest="cmd", required=True)
 
     pt = sub.add_parser("train", help="train a model from one or more Excel files")
-    pt.add_argument("--excel", required=True, nargs="+", #This is where u add your excel file names
+    pt.add_argument("--excel", required=True, nargs="+", #Where u add your excel file names
                      help="one or more Excel files (or glob patterns), "
                           "e.g. --excel closing_fist.xlsx opening_hand.xlsx rest.xlsx wave.xlsx")
     pt.add_argument("--model", default="emg_model.joblib")
@@ -461,7 +481,7 @@ def main():
     pr.add_argument("--model", default="emg_model.joblib")
     pr.add_argument("--port",  default="COM4", help="serial port of the Olimex board")
     pr.add_argument("--baud",  type=int, default=57600)
-    pr.add_argument("--arm-ip", default="192.168.1.215", help="xArm controller IP")
+    pr.add_argument("--arm-ip", default="192.168.1.225", help="xArm controller IP")
     pr.add_argument("--enable-motion", action="store_true",
                     help="actually move the arm (default is a safe dry run)")
 
