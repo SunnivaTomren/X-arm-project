@@ -20,14 +20,16 @@ import pandas as pd
 MAPPER = {
     # mappe -> hvilken etikett de AKTIVE vinduene faar.
     # De flate vinduene i hver mappe blir automatisk 'rest'.
-    "EMG-data/opening": "opening",
-    "EMG-data/closing": "closing",
+    "Open_fist":    "opening",
+    "closing_fist": "closing",
 }
 
-WIN          = 50    # vindusstorrelse i samples (50 @ 250Hz = 200 ms)
-STEP         = 25    # steg mellom vinduer (25 = 50% overlapp)
-TERSKEL_STD  = 5     # hvor mange MAD over hvile for aa regnes som "aktiv"
-UT_FIL       = "features.xlsx"
+WIN            = 50    # vindusstorrelse i samples (50 @ 250Hz = 200 ms)
+STEP           = 25    # steg mellom vinduer (25 = 50% overlapp)
+TERSKEL_STD    = 5     # hvor mange MAD over hvile for aa regnes som "aktiv"
+UT_FIL         = "features.xlsx"
+BASELINE       = 512   # midtpunkt for 10-bit ADC (samme som EMG_to_xArm.py)
+WAMP_THRESHOLD = 10    # Willison-amplitude terskel (samme som EMG_to_xArm.py)
 
 # ----------------------------------------------------------------------
 # 2. LES EN CSV-FIL (hopper over header-blokken)
@@ -65,19 +67,35 @@ def finn_aktiv(env):
     return env > terskel          # boolean array
 
 # ----------------------------------------------------------------------
-# 4. FEATURES PER VINDU (standard time-domain EMG-features)
+# 4. FEATURES PER VINDU  -- identiske med EMG_to_xArm.py slik at modellen
+#    kan brukes direkte i live-inferens mot xArmen.
 # ----------------------------------------------------------------------
-def features(vindu):
-    v = vindu.astype(float)
-    senter = v - np.mean(v)
-    rms = np.sqrt(np.mean(senter**2))
-    mav = np.mean(np.abs(senter))
-    wl  = np.sum(np.abs(np.diff(v)))            # waveform length
-    zc  = np.sum(np.diff(np.sign(senter)) != 0) # zero crossings
-    var = np.var(senter)
-    return [rms, mav, wl, zc, var]
+def features(vindu_raw, vindu_env):
+    x   = vindu_raw.astype(float)
+    xc  = x - BASELINE
+    env = vindu_env.astype(float)
+    dx  = np.diff(xc)
 
-FEATURE_NAVN = ["rms", "mav", "wl", "zc", "var"]
+    mav  = np.mean(np.abs(xc))
+    rms  = np.sqrt(np.mean(xc ** 2))
+    wl   = np.sum(np.abs(dx))
+    var  = np.var(xc)
+    iemg = np.sum(np.abs(xc))
+    zc   = np.sum((xc[:-1] * xc[1:] < 0) & (np.abs(dx) > 1))
+    ssc  = np.sum((np.diff(np.sign(dx)) != 0))
+    wamp = np.sum(np.abs(dx) > WAMP_THRESHOLD)
+    peak = np.max(np.abs(xc))
+
+    env_mean = np.mean(env)
+    env_std  = np.std(env)
+    env_max  = np.max(env)
+    env_rng  = np.max(env) - np.min(env)
+
+    return [mav, rms, wl, var, iemg, zc, ssc, wamp, peak,
+            env_mean, env_std, env_max, env_rng]
+
+FEATURE_NAVN = ["MAV", "RMS", "WL", "VAR", "IEMG", "ZC", "SSC", "WAMP", "PEAK",
+                "ENV_MEAN", "ENV_STD", "ENV_MAX", "ENV_RANGE"]
 
 # ----------------------------------------------------------------------
 # 5. HOVEDLOKKE
@@ -103,7 +121,7 @@ for mappe, aktiv_label in MAPPER.items():
             else:
                 klasse = "rest"            # flate biter foer/etter bevegelsen
 
-            rad = [opptak_id, klasse] + features(vindu_raw)
+            rad = [opptak_id, klasse] + features(vindu_raw, env[start:slutt])
             rader.append(rad)
 
 # ----------------------------------------------------------------------

@@ -337,7 +337,75 @@ def train(excel_paths, model_out):
 
 
 # ------------------------------------------------------------------
-# 5. REAL-TIME INFERENCE  +  xARM CONTROL
+# 5. TRAIN FROM PRE-COMPUTED FEATURES  (output from process_emg.py)
+# ------------------------------------------------------------------
+def train_from_features(excel_path, model_out):
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.pipeline import Pipeline
+    from sklearn.model_selection import GroupKFold, cross_val_predict
+    from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
+
+    df = pd.read_excel(excel_path)
+    if "label" not in df.columns or "opptak_id" not in df.columns:
+        raise ValueError("Excel-filen må ha kolonnene 'label' og 'opptak_id'")
+
+    feat_cols = [c for c in df.columns if c not in ("opptak_id", "label")]
+    X      = df[feat_cols].to_numpy()
+    y      = df["label"].to_numpy()
+    groups = df["opptak_id"].to_numpy()
+
+    classes = np.unique(y)
+    print(f"Lastet {len(X)} vinduer  |  {X.shape[1]} features  |  "
+          f"{len(classes)} klasse(r): {sorted(classes)}")
+
+    pipe = Pipeline([
+        ("scaler", StandardScaler()),
+        ("clf", RandomForestClassifier(
+            n_estimators=300, max_depth=None,
+            class_weight="balanced", random_state=42, n_jobs=-1)),
+    ])
+
+    if len(classes) < 2:
+        print("\n  ADVARSEL: bare én klasse. Trenger minst to for klassifisering.")
+        pipe.fit(X, y)
+    else:
+        n_splits = min(5, len(np.unique(groups)),
+                       int(min(np.bincount(pd.factorize(y)[0]))))
+        n_splits = max(2, n_splits)
+        cv = GroupKFold(n_splits=n_splits)
+        y_pred = cross_val_predict(pipe, X, y, groups=groups, cv=cv, n_jobs=-1)
+
+        print(f"\n=== {n_splits}-fold GroupKFold kryssvalidering ===")
+        print(f"Nøyaktighet: {accuracy_score(y, y_pred):.3f}\n")
+        print(classification_report(y, y_pred))
+        print("Forvirringsmatrise (rader=sann, kol=predikert):")
+        print("klasser:", list(classes))
+        print(confusion_matrix(y, y_pred, labels=classes))
+
+        pipe.fit(X, y)
+
+        imp   = pipe.named_steps["clf"].feature_importances_
+        order = np.argsort(imp)[::-1]
+        print("\nFeature-viktighet:")
+        for i in order:
+            print(f"  {feat_cols[i]:>10}: {imp[i]:.3f}")
+
+    bundle = {
+        "pipeline":       pipe,
+        "feature_names":  feat_cols,
+        "classes":        list(pipe.named_steps["clf"].classes_),
+        "window_samples": WINDOW_SAMPLES,
+        "baseline":       BASELINE,
+        "sampling_rate":  SAMPLING_RATE_HZ,
+    }
+    joblib.dump(bundle, model_out)
+    print(f"\nModell lagret til: {os.path.abspath(model_out)}")
+    return bundle
+
+
+# ------------------------------------------------------------------
+# 6. REAL-TIME INFERENCE  +  xARM CONTROL
 # ------------------------------------------------------------------
 # Map each predicted gesture to an xArm action. Edit freely.
 #
@@ -350,9 +418,9 @@ def train(excel_paths, model_out):
 #   4 = wrist rotation 1  5 = wrist bend     6 = wrist rotation 2
 # (xArm7 has an extra joint inserted; check your model's manual/diagram if unsure.)
 GESTURE_TO_ACTION = {
-    "closing_fist":  {"gripper": 0},                  # close gripper
-    "opening_hand":  {"gripper": 850},                # open gripper
-    "rest":          None,                             # do nothing
+    "closing": {"gripper": 0},    # lukk gripper
+    "opening": {"gripper": 850},  # åpne gripper
+    "rest":    None,              # gjør ingenting
 }
 
 
@@ -465,29 +533,36 @@ def run_live(model_path, serial_port, baud, arm_ip, enable_motion,
 
 
 # ------------------------------------------------------------------
-# 6. COMMAND-LINE INTERFACE
+# 7. COMMAND-LINE INTERFACE
 # ------------------------------------------------------------------
 def main():
     p = argparse.ArgumentParser(description="EMG -> ML -> xArm pipeline")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    pt = sub.add_parser("train", help="train a model from one or more Excel files")
-    pt.add_argument("--excel", required=True, nargs="+", #Where u add your excel file names
-                     help="one or more Excel files (or glob patterns), "
-                          "e.g. --excel closing_fist.xlsx opening_hand.xlsx rest.xlsx wave.xlsx")
+    pt = sub.add_parser("train", help="tren fra rådata Excel-filer")
+    pt.add_argument("--excel", required=True, nargs="+",
+                     help="én eller flere Excel-filer med rådata, f.eks. --excel closing_fist.xlsx")
     pt.add_argument("--model", default="emg_model.joblib")
+
+    pf = sub.add_parser("train-features",
+                        help="tren fra features.xlsx laget av process_emg.py")
+    pf.add_argument("--excel", required=True,
+                    help="sti til features.xlsx, f.eks. --excel EMG_data/features.xlsx")
+    pf.add_argument("--model", default="emg_model.joblib")
 
     pr = sub.add_parser("run", help="live EMG -> xArm")
     pr.add_argument("--model", default="emg_model.joblib")
-    pr.add_argument("--port",  default="COM4", help="serial port of the Olimex board")
+    pr.add_argument("--port",  default="COM4", help="serieport til Olimex-kortet")
     pr.add_argument("--baud",  type=int, default=57600)
-    pr.add_argument("--arm-ip", default="192.168.1.225", help="xArm controller IP")
+    pr.add_argument("--arm-ip", default="192.168.1.225", help="IP-adresse til xArm")
     pr.add_argument("--enable-motion", action="store_true",
-                    help="actually move the arm (default is a safe dry run)")
+                    help="faktisk beveg armen (standard er tørrkjøring uten bevegelse)")
 
     args = p.parse_args()
     if args.cmd == "train":
         train(args.excel, args.model)
+    elif args.cmd == "train-features":
+        train_from_features(args.excel, args.model)
     elif args.cmd == "run":
         run_live(args.model, args.port, args.baud, args.arm_ip, args.enable_motion)
 
