@@ -18,3 +18,10 @@ env/
 Thumbs.db
 .DS_Store
 
+# Genererte modell-filer (kan bli store)
+*.pt
+*.joblib
+
+# Genererte plot
+output/resultat_*.png
+
