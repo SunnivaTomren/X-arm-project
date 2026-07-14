@@ -14,22 +14,32 @@ import glob
 import numpy as np
 import pandas as pd
 
+BASE       = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR   = r"C:\Users\celin\Documents\Mekatronikk\Prosjekt_UiA\Robot_Arm\X-arm-project\data\raw"
+OUTPUT_DIR = r"C:\Users\celin\Documents\Mekatronikk\Prosjekt_UiA\Robot_Arm\X-arm-project\data\processed"
+
 # ----------------------------------------------------------------------
 # 1. INNSTILLINGER  -- juster disse
 # ----------------------------------------------------------------------
 MAPPER = {
     # mappe -> hvilken etikett de AKTIVE vinduene faar.
     # De flate vinduene i hver mappe blir automatisk 'rest'.
-    "Open_fist":    "opening",
-    "closing_fist": "closing",
+    os.path.join(DATA_DIR, "open_fist_celine"):    "opening",
+    os.path.join(DATA_DIR, "closing_fist_celine"): "closing",
 }
 
-WIN            = 50    # vindusstorrelse i samples (50 @ 250Hz = 200 ms)
-STEP           = 25    # steg mellom vinduer (25 = 50% overlapp)
-TERSKEL_STD    = 5     # hvor mange MAD over hvile for aa regnes som "aktiv"
-UT_FIL         = "features.xlsx"
-BASELINE       = 512   # midtpunkt for 10-bit ADC (samme som EMG_to_xArm.py)
-WAMP_THRESHOLD = 10    # Willison-amplitude terskel (samme som EMG_to_xArm.py)
+WIN              = 50    # vindusstorrelse i samples (50 @ 250Hz = 200 ms)
+STEP             = 25    # steg mellom vinduer (25 = 50% overlapp)
+UT_FIL           = os.path.join(OUTPUT_DIR, "features.xlsx")
+BASELINE         = 512   # midtpunkt for 10-bit ADC (samme som EMG_to_xArm.py)
+WAMP_THRESHOLD   = 10    # Willison-amplitude terskel (samme som EMG_to_xArm.py)
+
+# Faste envelope-terskler (fra analyse av closing_fist_celine / open_fist_celine):
+#   REST_ENV_LOW     = 99.9-persentil av malt hvile-envelope (527.6, rundet opp)
+#   GESTURE_ENV_HIGH = laveste observerte bevegelses-topp (545.7, rundet ned)
+# Brukes med hysterese i stedet for adaptiv median+MAD-terskel.
+REST_ENV_LOW     = 528
+GESTURE_ENV_HIGH = 546
 
 # ----------------------------------------------------------------------
 # 2. LES EN CSV-FIL (hopper over header-blokken)
@@ -61,10 +71,17 @@ def les_opptak(sti):
 # 3. FINN HVOR MUSKELEN ER AKTIV (via envelope + terskel)
 # ----------------------------------------------------------------------
 def finn_aktiv(env):
-    baseline = np.median(env)
-    mad = np.median(np.abs(env - baseline)) + 1e-9
-    terskel = baseline + TERSKEL_STD * mad
-    return env > terskel          # boolean array
+    """Merker hvert sample som aktivt/hvile med hysterese mellom REST_ENV_LOW og
+    GESTURE_ENV_HIGH (faste terskler), i stedet for adaptiv median+MAD-terskel."""
+    aktiv = np.zeros(len(env), dtype=bool)
+    state = False
+    for i, v in enumerate(env):
+        if v >= GESTURE_ENV_HIGH:
+            state = True
+        elif v < REST_ENV_LOW:
+            state = False
+        aktiv[i] = state
+    return aktiv
 
 # ----------------------------------------------------------------------
 # 4. FEATURES PER VINDU  -- identiske med EMG_to_xArm.py slik at modellen
