@@ -8,9 +8,9 @@ from xarm.wrapper import XArmAPI
 # ── Settings ──────────────────────────────────────────────────────────────────
 
 ROBOT_IP    = "192.168.1.225"
-MODEL_PATH  = "Models/emg_model_test.pt"
+MODEL_PATH  = "Models/emg_model_deep.pt"
 TRAIN_DATA  = r"C:\Users\celin\Documents\Mekatronikk\Prosjekt_UiA\Robot_Arm\X-arm-project\data\processed\features.xlsx"
-SAMPLE_FILE = r"C:\Users\celin\Documents\Mekatronikk\Prosjekt_UiA\Robot_Arm\X-arm-project\data\raw\closing_fist\closing_fist_20260531_104945.csv"
+SAMPLE_FILE = r"C:\Users\celin\Documents\Mekatronikk\Prosjekt_UiA\Robot_Arm\X-arm-project\data\raw\closing_fist_celine\closing_fist_C_20260714_125316.csv"
 
 WINDOW_SIZE = 250   # samples per window (1 second at 250 Hz)
 STRIDE      = 125   # 50% overlap
@@ -18,7 +18,7 @@ ZC_THRESH   = 5     # zero-crossing threshold
 WAMP_THRESH = 10    # Willison amplitude threshold
 
 FEATURES = ["MAV", "RMS", "WL", "VAR", "IEMG", "ZC", "SSC", "WAMP", "PEAK",
-            "ENV_MEAN", "ENV_STD", "ENV_MAX", "ENV_RANGE"]
+            "ENV_MEAN", "ENV_STD", "ENV_RANGE"]
 
 GRIPPER_OPEN   = 850
 GRIPPER_CLOSED = 0
@@ -46,7 +46,7 @@ def extract_features(emg, env):
     ENV_RANGE= np.max(env) - np.min(env)
 
     return [MAV, RMS, WL, VAR, IEMG, ZC, SSC, WAMP, PEAK,
-            ENV_MEAN, ENV_STD, ENV_MAX, ENV_RANGE]
+            ENV_MEAN, ENV_STD, ENV_RANGE]
 
 def extract_all_windows(csv_path):
     """Load a raw EMG CSV and extract features for every window."""

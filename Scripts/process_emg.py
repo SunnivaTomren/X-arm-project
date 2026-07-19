@@ -86,22 +86,39 @@ def finn_aktiv(env):
 # ----------------------------------------------------------------------
 # 4. FEATURES PER VINDU  -- identiske med EMG_to_xArm.py slik at modellen
 #    kan brukes direkte i live-inferens mot xArmen.
+#
+#    ENDRING: MAV/RMS/WL/VAR/IEMG/PEAK regnes naa ut fra ENVELOPE-signalet
+#    i stedet for det raa signalet. Envelopen er allerede et glidende
+#    gjennomsnitt av det rektifiserte raasignalet (se _compute_envelope
+#    andre steder i prosjektet), saa den er langt mindre stoyfoelsom
+#    sample-til-sample -- disse features bor derfor bli mer stabile
+#    mellom opptak enn naar de regnes paa det raa signalet direkte.
+#
+#    ZC og WAMP regnes fortsatt paa RAASIGNALET, med vilje: testet empirisk
+#    paa ekte data, og ZC/WAMP paa envelopen kollapser til konstant 0 for
+#    ALLE vinduer (envelopen er saa glatt at den naermest aldri krysser
+#    null eller hopper mer enn terskelen fra sample til sample) -- det
+#    ville fjernet 2 av 12 features helt. SSC forblir paa envelopen; den
+#    varierer fortsatt fint der.
 # ----------------------------------------------------------------------
 def features(vindu_raw, vindu_env):
-    x   = vindu_raw.astype(float)
-    xc  = x - BASELINE
-    env = vindu_env.astype(float)
+    raw = vindu_raw.astype(float)
+    xc  = raw - BASELINE      # raasignal, brukes kun til ZC/WAMP (se over)
     dx  = np.diff(xc)
 
-    mav  = np.mean(np.abs(xc))
-    rms  = np.sqrt(np.mean(xc ** 2))
-    wl   = np.sum(np.abs(dx))
-    var  = np.var(xc)
-    iemg = np.sum(np.abs(xc))
+    env = vindu_env.astype(float)
+    ec  = env - BASELINE      # senter envelopen paa ADC-baseline
+    de  = np.diff(ec)
+
+    mav  = np.mean(np.abs(ec))
+    rms  = np.sqrt(np.mean(ec ** 2))
+    wl   = np.sum(np.abs(de))
+    var  = np.var(ec)
+    iemg = np.sum(np.abs(ec))
     zc   = np.sum((xc[:-1] * xc[1:] < 0) & (np.abs(dx) > 1))
-    ssc  = np.sum((np.diff(np.sign(dx)) != 0))
+    ssc  = np.sum((np.diff(np.sign(de)) != 0))
     wamp = np.sum(np.abs(dx) > WAMP_THRESHOLD)
-    peak = np.max(np.abs(xc))
+    peak = np.max(np.abs(ec))
 
     env_mean = np.mean(env)
     env_std  = np.std(env)
