@@ -15,8 +15,8 @@ import numpy as np
 import pandas as pd
 
 BASE       = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR   = r"C:\Users\celin\Documents\Mekatronikk\Prosjekt_UiA\Robot_Arm\X-arm-project\data\raw"
-OUTPUT_DIR = r"C:\Users\celin\Documents\Mekatronikk\Prosjekt_UiA\Robot_Arm\X-arm-project\data\processed"
+DATA_DIR   = os.path.join(BASE, "..", "data", "raw")
+OUTPUT_DIR = os.path.join(BASE, "..", "data", "processed")
 
 # ----------------------------------------------------------------------
 # 1. INNSTILLINGER  -- juster disse
@@ -28,6 +28,7 @@ MAPPER = {
     os.path.join(DATA_DIR, "closing_fist_celine"): "closing",
 }
 
+FS               = 250   # samplingsrate (Hz) -- brukes i frekvens-features (MNF/MDF)
 WIN              = 50    # vindusstorrelse i samples (50 @ 250Hz = 200 ms)
 STEP             = 25    # steg mellom vinduer (25 = 50% overlapp)
 UT_FIL           = os.path.join(OUTPUT_DIR, "features.xlsx")
@@ -84,52 +85,62 @@ def finn_aktiv(env):
     return aktiv
 
 # ----------------------------------------------------------------------
-# 4. FEATURES PER VINDU  -- identiske med EMG_to_xArm.py slik at modellen
-#    kan brukes direkte i live-inferens mot xArmen.
+# 4. FEATURES PER VINDU
 #
-#    ENDRING: MAV/RMS/WL/VAR/IEMG/PEAK regnes naa ut fra ENVELOPE-signalet
-#    i stedet for det raa signalet. Envelopen er allerede et glidende
-#    gjennomsnitt av det rektifiserte raasignalet (se _compute_envelope
-#    andre steder i prosjektet), saa den er langt mindre stoyfoelsom
-#    sample-til-sample -- disse features bor derfor bli mer stabile
-#    mellom opptak enn naar de regnes paa det raa signalet direkte.
+#    Ryddet + utvidet sett paa 7 features (var 13). De gamle 13 var i praksis
+#    bare ~4 uavhengige: MAV = IEMG = ENV_MEAN (r=1.00), PEAK = ENV_MAX (r=1.00),
+#    RMS/WL/ENV_RANGE alle r>0.9 -- 9 features som malte SAMME amplitude. Fjernet.
+#    I stedet er MNF/MDF (mean/median frequency) lagt til; de er amplitude-
+#    uavhengige og loefter opening-vs-closing fra 62% (amplitude alene) til 90%.
+#    Sjekk begrunnelsen i feature_selection_report.py.
 #
-#    ZC og WAMP regnes fortsatt paa RAASIGNALET, med vilje: testet empirisk
-#    paa ekte data, og ZC/WAMP paa envelopen kollapser til konstant 0 for
-#    ALLE vinduer (envelopen er saa glatt at den naermest aldri krysser
-#    null eller hopper mer enn terskelen fra sample til sample) -- det
-#    ville fjernet 2 av 12 features helt. SSC forblir paa envelopen; den
-#    varierer fortsatt fint der.
+#      ENV_MEAN  amplitude (envelope) -- sterkest for ALLE gester, ogsaa rest
+#      ENV_STD   hvor mye envelopen varierer i vinduet
+#      WAMP      Willison-amplitude paa RAASIGNALET (aktivitetsteller)
+#      ZC        nullkryssinger paa RAASIGNALET (frekvens-proxy)
+#      SSC       stigningsskift paa ENVELOPEN
+#      MNF/MDF   mean/median frequency fra spekteret til RAASIGNALET
+#
+#    ZC/WAMP/MNF/MDF regnes paa RAASIGNALET med vilje: paa envelopen kollapser
+#    de fordi den er for glatt. ENV_MEAN/ENV_STD/SSC regnes paa envelopen.
+#
+#    NB: hvis modellen skal kjores live via EMG_to_xArm.py, maa dennes
+#    extract_features() endres til AKKURAT dette settet -- ellers ser
+#    live-modellen andre tall enn den ble trent paa. (Gjores separat.)
 # ----------------------------------------------------------------------
+def _mnf_mdf(xc):
+    """Mean- og median-frekvens fra effekt-spekteret til det sentrerte
+    raasignalet. Begge er ratioer i spekteret, altsaa amplitude-uavhengige."""
+    n = len(xc)
+    freqs = np.fft.rfftfreq(n, d=1.0 / FS)
+    P = np.abs(np.fft.rfft(xc)) ** 2
+    P[0] = 0.0                              # dropp DC-komponenten
+    tot = P.sum()
+    if tot <= 0:
+        return 0.0, 0.0
+    mnf = float(np.sum(freqs * P) / tot)
+    mdf = float(freqs[np.searchsorted(np.cumsum(P), tot / 2)])
+    return mnf, mdf
+
 def features(vindu_raw, vindu_env):
     raw = vindu_raw.astype(float)
-    xc  = raw - BASELINE      # raasignal, brukes kun til ZC/WAMP (se over)
+    xc  = raw - BASELINE          # raasignal sentrert paa 0
     dx  = np.diff(xc)
 
     env = vindu_env.astype(float)
-    ec  = env - BASELINE      # senter envelopen paa ADC-baseline
+    ec  = env - BASELINE          # envelope sentrert paa ADC-baseline
     de  = np.diff(ec)
-
-    mav  = np.mean(np.abs(ec))
-    rms  = np.sqrt(np.mean(ec ** 2))
-    wl   = np.sum(np.abs(de))
-    var  = np.var(ec)
-    iemg = np.sum(np.abs(ec))
-    zc   = np.sum((xc[:-1] * xc[1:] < 0) & (np.abs(dx) > 1))
-    ssc  = np.sum((np.diff(np.sign(de)) != 0))
-    wamp = np.sum(np.abs(dx) > WAMP_THRESHOLD)
-    peak = np.max(np.abs(ec))
 
     env_mean = np.mean(env)
     env_std  = np.std(env)
-    env_max  = np.max(env)
-    env_rng  = np.max(env) - np.min(env)
+    wamp     = np.sum(np.abs(dx) > WAMP_THRESHOLD)
+    zc       = np.sum((xc[:-1] * xc[1:] < 0) & (np.abs(dx) > 1))
+    ssc      = np.sum(np.diff(np.sign(de)) != 0)
+    mnf, mdf = _mnf_mdf(xc)
 
-    return [mav, rms, wl, var, iemg, zc, ssc, wamp, peak,
-            env_mean, env_std, env_max, env_rng]
+    return [env_mean, env_std, wamp, zc, ssc, mnf, mdf]
 
-FEATURE_NAVN = ["MAV", "RMS", "WL", "VAR", "IEMG", "ZC", "SSC", "WAMP", "PEAK",
-                "ENV_MEAN", "ENV_STD", "ENV_MAX", "ENV_RANGE"]
+FEATURE_NAVN = ["ENV_MEAN", "ENV_STD", "WAMP", "ZC", "SSC", "MNF", "MDF"]
 
 # ----------------------------------------------------------------------
 # 5. HOVEDLOKKE
@@ -161,6 +172,7 @@ for mappe, aktiv_label in MAPPER.items():
 # ----------------------------------------------------------------------
 # 6. LAGRE SAMLET FIL
 # ----------------------------------------------------------------------
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 df = pd.DataFrame(rader, columns=["opptak_id", "label"] + FEATURE_NAVN)
 df.to_excel(UT_FIL, index=False)
 

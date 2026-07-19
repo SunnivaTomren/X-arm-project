@@ -2,7 +2,7 @@
 Feature-analyse og klassesammenligning
 ======================================
 Leser de ferdig-uttrekte featurene fra output/features.xlsx og sammenligner
-hvordan hver av de 13 featurene oppforer seg for de tre klassene
+hvordan hver av de 7 featurene oppforer seg for de tre klassene
 (opening / closing / rest).
 
 Formaal: forstaa HVILKE features som skiller bevegelsene best fra hverandre.
@@ -33,8 +33,7 @@ INN_FIL    = os.path.join(BASE, "..", "data", "processed", "features.xlsx")
 OUTPUT_DIR = os.path.join(BASE, "..", "data", "processed", "Stats", "Open_close_stats")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-FEATURE_NAVN = ["MAV", "RMS", "WL", "VAR", "IEMG", "ZC", "SSC", "WAMP", "PEAK",
-                "ENV_MEAN", "ENV_STD", "ENV_MAX", "ENV_RANGE"]
+FEATURE_NAVN = ["ENV_MEAN", "ENV_STD", "WAMP", "ZC", "SSC", "MNF", "MDF"]
 
 # Rekkefolge + farger paa klassene i alle plott
 KLASSER = ["rest", "opening", "closing"]

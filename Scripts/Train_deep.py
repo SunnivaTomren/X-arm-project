@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupShuffleSplit
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.metrics import classification_report
 from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
@@ -13,8 +13,7 @@ from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
 _here = os.path.dirname(os.path.abspath(__file__))
 df = pd.read_excel(os.path.join(_here, "..", "data", "processed", "features.xlsx"))
 
-FEATURES = ["MAV", "RMS", "WL", "VAR", "IEMG", "ZC", "SSC", "WAMP", "PEAK",
-            "ENV_MEAN", "ENV_STD", "ENV_RANGE"]
+FEATURES = ["ENV_MEAN", "ENV_STD", "WAMP", "ZC", "SSC", "MNF", "MDF"]
 
 # Real class balance in features.xlsx is roughly rest=12340, closing=1230,
 # opening=830 (~86% rest) -- NOT balanced. Always predicting "rest" alone
@@ -31,8 +30,18 @@ y = le.fit_transform(df["label"])
 n_classes = len(le.classes_)
 
 # ── Split & normalise ─────────────────────────────────────────────────────────
-
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+#
+# DATALEKKASJE-FIKS: featurene lages fra vinduer med 50% overlapp, saa
+# nabovinduer fra SAMME opptak er nesten identiske rader. En vanlig tilfeldig
+# train_test_split ville sendt slike "tvillinger" til baade trening og test,
+# slik at modellen i praksis testes paa data den alt har sett -> kunstig hoy
+# score. GroupShuffleSplit grupperer paa opptak_id: alle vinduer fra ett opptak
+# holdes samlet i ENTEN trening ELLER test, aldri begge.
+groups = df["opptak_id"].values
+gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+train_idx, test_idx = next(gss.split(X, y, groups))
+X_train, X_test = X[train_idx], X[test_idx]
+y_train, y_test = y[train_idx], y[test_idx]
 
 scaler  = StandardScaler()
 X_train = scaler.fit_transform(X_train)
