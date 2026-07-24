@@ -46,7 +46,7 @@ model = nn.Sequential(
 ).to(device)
 
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-criterion = nn.CrossEntropyLoss()
+criterion = nn.CrossEntropyLoss(weight=torch.tensor([0.14, 1.0, 1.0], device=device))  # equal weights for all classes
 
 # ── Train ─────────────────────────────────────────────────────────────────────
 
