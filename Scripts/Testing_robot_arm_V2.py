@@ -1,17 +1,23 @@
+import os
 import torch
 import torch.nn as nn
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupShuffleSplit
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from xarm.wrapper import XArmAPI
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 
-ROBOT_IP    = "192.168.1.225"
-MODEL_PATH  = "Models/emg_model_deep.pt"
-TRAIN_DATA  = r"C:\Users\celin\Documents\Mekatronikk\Prosjekt_UiA\Robot_Arm\X-arm-project\data\processed\features.xlsx"
-SAMPLE_FILE = r"C:\Users\celin\Documents\Mekatronikk\Prosjekt_UiA\Robot_Arm\X-arm-project\data\raw\closing_fist_celine\closing_fist_C_20260714_125316.csv"
+ROBOT_IP = "192.168.1.225"
+
+# Paths are resolved relative to this file, not the working directory, so the
+# script runs the same from any cwd and on any machine that has the repo.
+_here       = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH  = os.path.join(_here, "..", "Models", "emg_model_deep.pt")
+TRAIN_DATA  = os.path.join(_here, "..", "data", "processed", "features.xlsx")
+SAMPLE_FILE = os.path.join(_here, "..", "data", "raw", "closing_fist_celine",
+                           "closing_fist_C_20260714_125316.csv")
 
 # MUST match process_emg.py exactly -- these define how a raw signal gets
 # turned into one feature row, and if they don't match what features.xlsx
@@ -20,56 +26,68 @@ SAMPLE_FILE = r"C:\Users\celin\Documents\Mekatronikk\Prosjekt_UiA\Robot_Arm\X-ar
 # different script's convention) while process_emg.py actually uses
 # WIN=50, STEP=25, and a hardcoded zero-crossing threshold of 1 -- a 5x
 # window-length mismatch that alone was enough to break every prediction.
+FS          = 250   # sampling rate (Hz) -- needed for MNF/MDF; = process_emg.py's FS
 WINDOW_SIZE = 50    # samples per window (200 ms at 250 Hz) -- = process_emg.py's WIN
 STRIDE      = 25    # 50% overlap                            -- = process_emg.py's STEP
 ZC_THRESH   = 1     # = process_emg.py's hardcoded zero-crossing threshold
-WAMP_THRESH = 10    # Willison amplitude threshold
+WAMP_THRESH = 10    # = process_emg.py's WAMP_THRESHOLD
 BASELINE    = 512   # ADC midpoint -- features.xlsx centers on this
 
 # Must match Train_deep.py's FEATURES list exactly: same names, same order,
-# same count (12) -- this is what the saved model's input layer expects.
-FEATURES = ["MAV", "RMS", "WL", "VAR", "IEMG", "ZC", "SSC", "WAMP", "PEAK",
-            "ENV_MEAN", "ENV_STD", "ENV_RANGE"]
+# same count (7) -- this is what the saved model's input layer expects.
+# The old 12/13-feature amplitude set was cut down in process_emg.py because
+# MAV/IEMG/ENV_MEAN and PEAK/ENV_MAX were near-duplicates (r≈1.00); MNF/MDF
+# were added in their place as amplitude-independent frequency features.
+FEATURES = ["ENV_MEAN", "ENV_STD", "WAMP", "ZC", "SSC", "MNF", "MDF"]
 
 GRIPPER_OPEN   = 850
 GRIPPER_CLOSED = 0
 
 # ── Feature extraction ────────────────────────────────────────────────────────
 
-def extract_features(emg, env):
-    """Extract features from one window. MAV/RMS/WL/VAR/IEMG/PEAK are
-    computed from the ENVELOPE (smoother, less sample-to-sample noise
-    than raw EMG) to match the updated process_emg.py. ZC and WAMP are
-    kept on the RAW signal on purpose: tested empirically on real data,
-    and ZC/WAMP computed on the envelope collapse to a constant 0 for
-    every window (the envelope is too smooth to cross zero or jump past
-    the threshold sample-to-sample) -- that would silently throw away 2
-    of the 12 features. SSC stays on the envelope; it still varies fine
-    there.
+def _mnf_mdf(xc):
+    """Mean and median frequency of the centred RAW signal's power spectrum.
+    Both are ratios within the spectrum, so they are amplitude-independent --
+    that is exactly why they separate opening from closing where the pure
+    amplitude features could not. Copied verbatim from process_emg.py.
     """
-    emg = np.array(emg, dtype=np.float32)
-    xc  = emg - BASELINE      # raw signal, used only for ZC/WAMP (see above)
+    n = len(xc)
+    freqs = np.fft.rfftfreq(n, d=1.0 / FS)
+    P = np.abs(np.fft.rfft(xc)) ** 2
+    P[0] = 0.0                              # drop the DC component
+    tot = P.sum()
+    if tot <= 0:
+        return 0.0, 0.0
+    mnf = float(np.sum(freqs * P) / tot)
+    mdf = float(freqs[np.searchsorted(np.cumsum(P), tot / 2)])
+    return mnf, mdf
+
+def extract_features(emg, env):
+    """Extract one feature row for one window -- must stay numerically
+    identical to process_emg.py's features(), since that is what built the
+    features.xlsx the model was trained and scaled on.
+
+    Which signal each feature comes from is deliberate: WAMP/ZC/MNF/MDF use
+    the RAW signal, because on the envelope they collapse (it is far too
+    smooth to cross zero, exceed the Willison threshold, or carry usable
+    spectral content). ENV_MEAN/ENV_STD/SSC use the ENVELOPE.
+    """
+    raw = np.asarray(emg, dtype=float)
+    xc  = raw - BASELINE          # raw signal centred on 0
     dx  = np.diff(xc)
 
-    env = np.array(env, dtype=np.float32)
-    ec  = env - BASELINE
+    env = np.asarray(env, dtype=float)
+    ec  = env - BASELINE          # envelope centred on the ADC baseline
     de  = np.diff(ec)
 
-    MAV      = np.mean(np.abs(ec))
-    RMS      = np.sqrt(np.mean(ec ** 2))
-    WL       = np.sum(np.abs(de))
-    VAR      = np.var(ec)
-    IEMG     = np.sum(np.abs(ec))
-    ZC       = np.sum((xc[:-1] * xc[1:] < 0) & (np.abs(dx) > ZC_THRESH))
-    SSC      = np.sum(np.diff(np.sign(de)) != 0)
-    WAMP     = np.sum(np.abs(dx) > WAMP_THRESH)
-    PEAK     = np.max(np.abs(ec))
     ENV_MEAN = np.mean(env)
     ENV_STD  = np.std(env)
-    ENV_RANGE= np.max(env) - np.min(env)
+    WAMP     = np.sum(np.abs(dx) > WAMP_THRESH)
+    ZC       = np.sum((xc[:-1] * xc[1:] < 0) & (np.abs(dx) > ZC_THRESH))
+    SSC      = np.sum(np.diff(np.sign(de)) != 0)
+    MNF, MDF = _mnf_mdf(xc)
 
-    return [MAV, RMS, WL, VAR, IEMG, ZC, SSC, WAMP, PEAK,
-            ENV_MEAN, ENV_STD, ENV_RANGE]
+    return [ENV_MEAN, ENV_STD, WAMP, ZC, SSC, MNF, MDF]
 
 def extract_all_windows(csv_path):
     """Load a raw EMG CSV and extract features for every window."""
@@ -101,15 +119,20 @@ le    = LabelEncoder()
 y_all = le.fit_transform(df_train["label"])          # same call as Train_deep.py, same label order
 X_all = df_train[FEATURES].values
 
-# Train_deep.py fits StandardScaler on X_train only (an 80% split with
-# random_state=42) -- NOT on the full dataset. Reproduce that exact split
-# here so `scaler` has the same mean/scale the saved weights were trained
-# against (fitting on 100% of the data, as before, gives slightly different
-# statistics and quietly degrades predictions).
-X_train, X_test, y_train, y_test = train_test_split(
-    X_all, y_all, test_size=0.2, random_state=42)
+# Train_deep.py fits StandardScaler on X_train only -- NOT on the full
+# dataset -- so reproduce its exact split here, or `scaler` ends up with
+# different mean/scale than the saved weights were trained against.
+#
+# The split is GroupShuffleSplit on opptak_id, not train_test_split: windows
+# overlap by 50%, so neighbouring rows from the same recording are near
+# duplicates, and grouping by recording keeps them out of both halves at
+# once. Using the old plain train_test_split here would pick a different 80%
+# and shift every feature's mean/scale.
+groups = df_train["opptak_id"].values
+gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+train_idx, _ = next(gss.split(X_all, y_all, groups))
 scaler = StandardScaler()
-scaler.fit(X_train)
+scaler.fit(X_all[train_idx])
 
 n_classes  = len(le.classes_)
 n_features = len(FEATURES)
@@ -131,10 +154,24 @@ model = nn.Sequential(
     nn.Linear(64, 32),   nn.BatchNorm1d(32),  nn.ReLU(), nn.Dropout(DROP),
     nn.Linear(32, n_classes),
 )
-model.load_state_dict(torch.load(MODEL_PATH, weights_only=True))
+state = torch.load(MODEL_PATH, weights_only=True)
+
+# Fail loudly if the checkpoint was trained on a different feature count than
+# FEATURES above. This is the exact bug this file just had (12 features here
+# vs 7 in Train_deep.py), and without the check a stale .pt file gives a wall
+# of PyTorch shape errors instead of pointing at the real cause.
+saved_n_features = state["0.weight"].shape[1]
+if saved_n_features != n_features:
+    raise SystemExit(
+        f"{MODEL_PATH} expects {saved_n_features} input features, but FEATURES "
+        f"lists {n_features} ({FEATURES}).\nRe-run Train_deep.py to regenerate "
+        f"the model, or align FEATURES with the checkpoint.")
+
+model.load_state_dict(state)
 model.eval()   # disables Dropout, freezes BatchNorm to its trained running stats
 
 print(f"Classes: {list(le.classes_)}")
+print(f"Features ({n_features}): {FEATURES}")
 
 # ── Connect to robot ──────────────────────────────────────────────────────────
 
