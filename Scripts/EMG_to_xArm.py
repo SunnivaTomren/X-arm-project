@@ -9,29 +9,12 @@ The script has two modes:
     python emg_to_xarm_ml.py train  --excel data/*.xlsx
     python emg_to_xarm_ml.py run    --model emg_model.joblib --port COM4
 
-------------------------------------------------------------------
-HOW TRAINING DATA IS ORGANISED
-------------------------------------------------------------------
-The Excel file(s) don't exist yet -- this script is written so you can drop
-them in later with no code changes. You said there will be 4 datasets; the
-intended setup is **one Excel file per gesture**, e.g.:
-
-    closing_fist.xlsx
-    opening_hand.xlsx
-    rest.xlsx
-    wave.xlsx
 
 Train on all of them in one call:
 
     python emg_to_xarm_ml.py train --excel closing_fist.xlsx opening_hand.xlsx rest.xlsx wave.xlsx
     python emg_to_xarm_ml.py train --excel "data/*.xlsx"     (a glob also works, quote it)
 
-Each Excel's gesture label is taken from its filename (e.g. "closing_fist.xlsx"
--> label "closing_fist"). If a single Excel already mixes several recordings
-internally (one row per sample, many recordings stacked, with a Source_File
-column identifying each recording -- like a combined export), each
-recording's label is parsed from Source_File instead. Both styles can be
-mixed freely in the same --excel list.
 
 ------------------------------------------------------------------
 EXPECTED EXCEL FORMAT  (one row per sample)
@@ -39,10 +22,6 @@ EXPECTED EXCEL FORMAT  (one row per sample)
     Source_File          Sample_Index   Raw_EMG   Envelope   Active/non Active
     closing_fist_*.csv   0              489.0     527.8      (optional)
     ...
-
-Only Raw_EMG is required. Sample_Index, Envelope, Source_File, and the
-Active/non Active column are all optional / auto-filled if missing.
-=================================================================
 """
 
 import os
@@ -74,13 +53,7 @@ WAMP_THRESHOLD   = 10           # Willison-amplitude threshold (ADC units)
 # 2. LOADING THE EXCEL FILE(S)
 # ------------------------------------------------------------------
 def load_excel(path):
-    """Read ONE Excel file into a clean DataFrame with numeric columns.
-
-    If the file has no usable Source_File column (i.e. it's a single
-    recording / single-gesture file, which is the expected case for your
-    4 upcoming datasets), Source_File is filled in from the filename so
-    every row still has a recording id to group by.
-    """
+ 
     if not os.path.exists(path):
         raise FileNotFoundError(f"Excel file not found: {path}")
 
@@ -115,9 +88,7 @@ def load_excel(path):
         df["Sample_Index"] = np.arange(len(df))
 
     if "Source_File" not in df.columns or df["Source_File"].isna().all():
-        # Single-recording file -> use the Excel's own filename as the
-        # recording id. This is the expected case for your 4 datasets,
-        # one Excel per gesture (e.g. closing_fist.xlsx).
+         # one Excel per gesture (e.g. closing_fist.xlsx).
         df["Source_File"] = os.path.basename(path)
 
     if "Envelope" not in df.columns or df["Envelope"].isna().all():
@@ -129,11 +100,6 @@ def load_excel(path):
         )
 
     # GESTURE LABEL.
-    # Case A (expected for your 4 datasets): one Excel = one gesture, named
-    # after the file itself, e.g. closing_fist.xlsx -> "closing_fist".
-    # Case B: a combined export where Source_File values look like
-    # "<gesture>_<timestamp>.csv" (multiple gestures stacked in one Excel) ->
-    # derive the label per-row from Source_File instead.
     looks_combined = df["Source_File"].astype(str).str.contains(
         r"_\d{8}_\d{6}\.csv$", regex=True, na=False
     ).any()
@@ -243,10 +209,6 @@ def build_dataset(df):
             labels_series = g["Active"].astype(str).to_numpy()
         else:
             labels_series = None
-        # Per-Excel-file gesture label, set once in load_excel(). Falls back to
-        # parsing the recording id itself only if Gesture_Label is missing
-        # (shouldn't happen via load_excel, but keeps this function robust
-        # if called directly on a hand-built DataFrame).
         file_label = g["Gesture_Label"].iloc[0] if "Gesture_Label" in g.columns \
             else label_from_filename(source)
 
@@ -291,8 +253,6 @@ def train(excel_paths, model_out):
     ])
 
     if len(classes) < 2:
-        # Only one gesture present -> we can't *classify*, but we can still fit
-        # the model so the pipeline is ready for when more gestures are added.
         print("\n  WARNING: only ONE gesture class is present in this Excel file.")
         print("  A classifier needs at least two gestures (e.g. add 'rest' and")
         print("  'opening_hand' recordings). Fitting a single-class model anyway")
@@ -316,7 +276,7 @@ def train(excel_paths, model_out):
         # Refit on ALL data for the final saved model
         pipe.fit(X, y)
 
-        # Feature importances (handy for your report)
+        # Feature importances
         imp = pipe.named_steps["clf"].feature_importances_
         order = np.argsort(imp)[::-1]
         print("\nFeature importances:")
@@ -411,16 +371,11 @@ def train_from_features(excel_path, model_out):
 #
 # Two action types are supported per gesture:
 #   "gripper": <0-850>            -> open/close the gripper (0=closed, 850=open)
-#   "joint":   {"id": N, "angle": deg}  -> move ONE joint to an absolute angle (degrees)
-#
-# Joint numbering on a 6-axis xArm (servo_id 1-6), counting from the base:
-#   1 = base rotation     2 = shoulder       3 = elbow
-#   4 = wrist rotation 1  5 = wrist bend     6 = wrist rotation 2
-# (xArm7 has an extra joint inserted; check your model's manual/diagram if unsure.)
+
 GESTURE_TO_ACTION = {
-    "closing": {"gripper": 0},    # lukk gripper
-    "opening": {"gripper": 850},  # åpne gripper
-    "rest":    None,              # gjør ingenting
+    "closing": {"gripper": 0},    # close gripper
+    "opening": {"gripper": 850},  # open gripper
+    "rest":    None,              # do nothing
 }
 
 

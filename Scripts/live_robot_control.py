@@ -1,11 +1,5 @@
 """Drive the xArm gripper live from the Olimex EMG-shield stream, with a
 live raw+envelope plot so you can see whether your movement registered.
-
-Reuses the trained model, scaler, extract_features(), predict() and
-move_gripper() from Testing_robot_arm_V3.py, and the serial packet parsing
-and envelope math (0xA5/0x5A sync, big-endian channel value, 30-sample
-moving-average envelope) from olimex-emg_class_v2.py's acquisition script,
-so live features are computed exactly the way the training data was.
 """
 
 import struct

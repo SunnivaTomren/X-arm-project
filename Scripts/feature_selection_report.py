@@ -1,22 +1,7 @@
 """
-Feature-utvalg: BEGRUNNELSE  (forsvars-figurer for rapporten)
+Feature selection, is used to justify why we chose the 7 features we did. 
 ============================================================
-Dette scriptet dokumenterer HVORFOR vi gikk fra 13 til 7 features, og hvorfor
-nettopp disse 7. Det regner kandidat-featurene direkte fra RAADATA (ikke fra
-features.xlsx, som naa bare inneholder de 7 valgte), slik at vi kan sammenligne
-det gamle og det nye settet rettferdig.
-
-Alle tall er fra GRUPPERT kryssvalidering (GroupKFold paa opptak_id) -- dvs.
-vinduer fra samme opptak havner aldri i baade trening og test. Det gir aerlige
-tall uten datalekkasje.
-
-Kjor:  python feature_selection_report.py
-
-Lager i data/processed/Stats/Feature_selection/:
-  - 1_redundans_gamle13.png     korrelasjon i det gamle settet (mange r>0.9 = duplikater)
-  - 2_settsammenligning.png     macro-F1 for amplitude / 13 gamle / 7 valgte / alle 15
-  - 3_open_vs_close.png         hva som skiller opening fra closing (amplitude vs frekvens vs alle)
-  - feature_selection.xlsx      tallene bak figurene
+This script explains why we chose the 7 features we did, and why we didn't just use the old 13.
 """
 import os
 import glob
